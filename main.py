@@ -496,6 +496,12 @@ def page_lab(df: pd.DataFrame):
     ss.setdefault("lab_log", [])  # 실험 기록
     ss.setdefault("lab_msg", None)  # 마지막 결과 안내 (종류, 문장)
 
+    # 앱을 수정한 뒤 이전 세션에 남은 값이 물질 목록 범위를 벗어나면 초기화한다
+    if ss.lab_sid is not None and ss.lab_sid not in subs.index:
+        ss.lab_sid, ss.lab_mass, ss.lab_msg = None, 0.0, None
+    if "lab_choice" in ss and ss.lab_choice not in subs.index:
+        del ss["lab_choice"]
+
     left, mid, right = st.columns([1.15, 2, 1.25], gap="large")
 
     # ── 왼쪽: 물질 선택 + 질량 + 버튼 ──
