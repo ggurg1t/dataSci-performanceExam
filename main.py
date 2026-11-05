@@ -347,21 +347,37 @@ logS가 1 줄어들 때마다 녹는 양은 **10배씩 줄어듭니다.**
 WATER_ML = 100.0  # 비커 속 물의 양
 WATER_L = WATER_ML / 1000
 WATER_RGB = (205, 232, 250)  # 맑은 물
-DEEP_RGB = (20, 60, 140)  # 아주 진하게 녹은 물
+# 물질마다 고유한 색 (이모지, 색 이름, 가장 진할 때의 RGB)
+PALETTE = [
+    ("🔴", "빨강", (214, 40, 40)),
+    ("🟠", "주황", (240, 130, 20)),
+    ("🟡", "노랑", (235, 200, 20)),
+    ("🟢", "초록", (40, 160, 70)),
+    ("🔵", "파랑", (30, 100, 220)),
+    ("🟣", "보라", (140, 70, 190)),
+    ("🟤", "갈색", (125, 80, 45)),
+    ("⚫", "검정", (40, 40, 40)),
+]
 
 
 @st.cache_data
 def lab_substances(df: pd.DataFrame) -> pd.DataFrame:
-    """logS가 고르게 퍼지도록 실제 화합물 10개를 뽑아 '물질 A~J'로 이름 붙인다."""
+    """logS가 고르게 퍼지도록 실제 화합물 8개를 뽑아 '물질 A~H'로 이름 붙이고 고유 색을 준다."""
     ordered = df.sort_values(TARGET).reset_index(drop=True)
-    count = 10
+    count = len(PALETTE)
     positions = [round(i * (len(ordered) - 1) / (count - 1)) for i in range(count)]
     picked = ordered.iloc[positions].reset_index(drop=True)
     order = list(range(count))
     random.Random(7).shuffle(order)  # 목록 순서만으로 용해도를 짐작하지 못하게 섞는다
     picked = picked.iloc[order].reset_index(drop=True)
     picked["물질명"] = [f"물질 {chr(65 + i)}" for i in range(count)]
+    picked["색번호"] = list(range(count))
     return picked
+
+
+def substance_color(row: pd.Series) -> tuple:
+    """(이모지, 색 이름, RGB)"""
+    return PALETTE[int(row["색번호"])]
 
 
 def lab_result(row: pd.Series, total_mass: float) -> dict:
@@ -389,15 +405,16 @@ def fmt_g(x: float) -> str:
     return f"{x:.3g}"
 
 
-def lerp_rgb(t: float) -> tuple:
-    return tuple(round(a + (b - a) * t) for a, b in zip(WATER_RGB, DEEP_RGB))
+def lerp_rgb(t: float, deep: tuple) -> tuple:
+    return tuple(round(a + (b - a) * t) for a, b in zip(WATER_RGB, deep))
 
 
-def make_beaker(t, frac_undissolved, seed, title, subtitle):
-    """plotly 도형으로 비커를 그린다. t: 물 색 진하기(0~1)."""
+def make_beaker(t, frac_undissolved, seed, title, subtitle, deep=(30, 100, 220)):
+    """plotly 도형으로 비커를 그린다. t: 물 색 진하기(0~1), deep: 물질 고유색."""
     rng = random.Random(seed)
     water_top = 8.0
-    r, g, b = lerp_rgb(t)
+    r, g, b = lerp_rgb(t, deep)
+    dr, dg, db = deep
 
     fig = go.Figure()
 
@@ -429,7 +446,7 @@ def make_beaker(t, frac_undissolved, seed, title, subtitle):
         fig.add_trace(go.Scatter(
             x=[rng.uniform(2.3, 7.7)], y=[rng.uniform(1.5, water_top - 0.2)],
             mode="markers", hoverinfo="skip", showlegend=False,
-            marker=dict(size=4, color=f"rgba({max(r - 60, 0)},{max(g - 60, 0)},{max(b - 40, 0)},0.55)"),
+            marker=dict(size=4, color=f"rgba({dr},{dg},{db},0.6)"),
         ))
 
     # 녹지 않고 가라앉은 알갱이
@@ -440,7 +457,7 @@ def make_beaker(t, frac_undissolved, seed, title, subtitle):
             x=[rng.uniform(2.45, 7.55) for _ in range(n_solid)],
             y=[rng.uniform(1.25, 1.25 + band) for _ in range(n_solid)],
             mode="markers", hoverinfo="skip", showlegend=False,
-            marker=dict(size=9, color="rgba(120,108,96,0.95)", line=dict(color="white", width=1)),
+            marker=dict(size=9, color=f"rgba({dr},{dg},{db},0.95)", line=dict(color="white", width=1)),
         ))
 
     # 비커 유리 윤곽
@@ -488,7 +505,7 @@ def page_lab(df: pd.DataFrame):
             "물질",
             list(subs.index),
             format_func=lambda i: (
-                f"{subs.at[i, '물질명']}  ·  분자량 {subs.at[i, 'MolWt']:.0f}"
+                f"{substance_color(subs.loc[i])[0]} {subs.at[i, '물질명']}  ·  분자량 {subs.at[i, 'MolWt']:.0f}"
                 f"  ·  MolLogP {subs.at[i, 'MolLogP']:.1f}"
             ),
             key="lab_choice",
@@ -540,22 +557,27 @@ def page_lab(df: pd.DataFrame):
 
     # ── 현재 비커 상태 계산 ──
     active = ss.lab_sid
+    deep = PALETTE[0][2]
     if active is None:
         t, frac, title, subtitle, res = 0.0, 0.0, f"비커 #{ss.lab_beaker}", f"물 {WATER_ML:.0f} mL (비어 있음)", None
     else:
         row = subs.loc[active]
+        deep = substance_color(row)[2]
         res = lab_result(row, ss.lab_mass)
         # 녹은 농도(g/L)가 1e-4 이하면 투명, 10 이상이면 가장 진함 (로그 눈금)
         t = min(max((math.log10(max(res["conc_g_l"], 1e-12)) + 4) / 5, 0.0), 1.0)
         frac = res["undissolved"] / ss.lab_mass if ss.lab_mass > 0 else 0.0
         title = f"비커 #{ss.lab_beaker}"
-        subtitle = f"{row['물질명']} {ss.lab_mass:.1f} g + 물 {WATER_ML:.0f} mL"
+        subtitle = f"{substance_color(row)[0]} {row['물질명']} {ss.lab_mass:.1f} g + 물 {WATER_ML:.0f} mL"
 
     # ── 가운데: 비커 ──
     with mid:
-        fig = make_beaker(t, frac, seed=ss.lab_beaker * 1000 + len(ss.lab_log), title=title, subtitle=subtitle)
+        fig = make_beaker(t, frac, seed=ss.lab_beaker * 1000 + len(ss.lab_log), title=title, subtitle=subtitle, deep=deep)
         st.plotly_chart(fig, config={"displayModeBar": False})
-        st.caption("물 색: 녹은 농도가 높을수록 진해집니다 (로그 눈금). 갈색 알갱이는 녹지 못하고 가라앉은 물질입니다.")
+        st.caption(
+            "물질마다 고유한 색이 있고, 녹은 농도가 높을수록 물이 그 색으로 진해집니다 (로그 눈금). "
+            "바닥의 알갱이는 녹지 못하고 가라앉은 물질입니다."
+        )
 
     # ── 오른쪽: 결과 ──
     with right:
@@ -564,7 +586,8 @@ def page_lab(df: pd.DataFrame):
             st.info("물질과 질량을 고르고 **비커에 넣기**를 눌러 보세요.")
         else:
             row = subs.loc[active]
-            st.markdown(f"**{row['물질명']}** · 비커 #{ss.lab_beaker}")
+            emoji, color_name, _ = substance_color(row)
+            st.markdown(f"{emoji} **{row['물질명']}** ({color_name}색 물질) · 비커 #{ss.lab_beaker}")
             m1, m2 = st.columns(2)
             m1.metric("실측 logS", f"{row[TARGET]:.2f}")
             m2.metric("수용해도", f"{fmt_g(res['s_g_l'])} g/L")
