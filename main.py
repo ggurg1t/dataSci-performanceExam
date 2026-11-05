@@ -1,3 +1,6 @@
+import math
+import random
+
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -340,6 +343,258 @@ logS가 1 줄어들 때마다 녹는 양은 **10배씩 줄어듭니다.**
     )
 
 
+# ───────────────────────── 페이지 4: 직접 해보기 ─────────────────────────
+WATER_ML = 100.0  # 비커 속 물의 양
+WATER_L = WATER_ML / 1000
+WATER_RGB = (205, 232, 250)  # 맑은 물
+DEEP_RGB = (20, 60, 140)  # 아주 진하게 녹은 물
+
+
+@st.cache_data
+def lab_substances(df: pd.DataFrame) -> pd.DataFrame:
+    """logS가 고르게 퍼지도록 실제 화합물 10개를 뽑아 '물질 A~J'로 이름 붙인다."""
+    ordered = df.sort_values(TARGET).reset_index(drop=True)
+    count = 10
+    positions = [round(i * (len(ordered) - 1) / (count - 1)) for i in range(count)]
+    picked = ordered.iloc[positions].reset_index(drop=True)
+    order = list(range(count))
+    random.Random(7).shuffle(order)  # 목록 순서만으로 용해도를 짐작하지 못하게 섞는다
+    picked = picked.iloc[order].reset_index(drop=True)
+    picked["물질명"] = [f"물질 {chr(65 + i)}" for i in range(count)]
+    return picked
+
+
+def lab_result(row: pd.Series, total_mass: float) -> dict:
+    """비커(물 100 mL)에 total_mass g을 넣었을 때의 용해 결과."""
+    s_mol_l = 10 ** float(row[TARGET])
+    s_g_l = s_mol_l * float(row["MolWt"])
+    limit_g = s_g_l * WATER_L  # 100 mL에 녹을 수 있는 최대 질량
+    dissolved = min(total_mass, limit_g)
+    undissolved = total_mass - dissolved
+    return {
+        "s_mol_l": s_mol_l,
+        "s_g_l": s_g_l,
+        "limit_g": limit_g,
+        "dissolved": dissolved,
+        "undissolved": undissolved,
+        "conc_g_l": dissolved / WATER_L,
+    }
+
+
+def fmt_g(x: float) -> str:
+    if x == 0:
+        return "0"
+    if x < 0.001 or x >= 10000:
+        return f"{x:.2e}"
+    return f"{x:.3g}"
+
+
+def lerp_rgb(t: float) -> tuple:
+    return tuple(round(a + (b - a) * t) for a, b in zip(WATER_RGB, DEEP_RGB))
+
+
+def make_beaker(t, frac_undissolved, seed, title, subtitle):
+    """plotly 도형으로 비커를 그린다. t: 물 색 진하기(0~1)."""
+    rng = random.Random(seed)
+    water_top = 8.0
+    r, g, b = lerp_rgb(t)
+
+    fig = go.Figure()
+
+    # 물
+    fig.add_shape(
+        type="path",
+        path=(
+            f"M 2.08,{water_top} L 2.08,2 Q 2.08,1.08 3,1.08 L 7,1.08 "
+            f"Q 7.92,1.08 7.92,2 L 7.92,{water_top} Z"
+        ),
+        fillcolor=f"rgba({r},{g},{b},0.82)",
+        line=dict(width=0),
+        layer="below",
+    )
+    fig.add_shape(
+        type="line", x0=2.08, x1=7.92, y0=water_top, y1=water_top,
+        line=dict(color=f"rgb({max(r - 40, 0)},{max(g - 40, 0)},{max(b - 40, 0)})", width=2),
+    )
+
+    # 눈금 (100 mL = 물 높이)
+    for ml in (25, 50, 75, 100):
+        y = 1 + (water_top - 1) * ml / WATER_ML
+        fig.add_shape(type="line", x0=7.35, x1=8, y0=y, y1=y, line=dict(color="#7b8794", width=2))
+        fig.add_annotation(x=8.15, y=y, text=f"{ml} mL", showarrow=False, xanchor="left",
+                           font=dict(size=11))
+
+    # 녹은 입자 (진할수록 많이)
+    for _ in range(int(t * 70)):
+        fig.add_trace(go.Scatter(
+            x=[rng.uniform(2.3, 7.7)], y=[rng.uniform(1.5, water_top - 0.2)],
+            mode="markers", hoverinfo="skip", showlegend=False,
+            marker=dict(size=4, color=f"rgba({max(r - 60, 0)},{max(g - 60, 0)},{max(b - 40, 0)},0.55)"),
+        ))
+
+    # 녹지 않고 가라앉은 알갱이
+    n_solid = 0 if frac_undissolved < 0.005 else math.ceil(frac_undissolved * 70)
+    band = 0.25 + 1.6 * frac_undissolved
+    if n_solid:
+        fig.add_trace(go.Scatter(
+            x=[rng.uniform(2.45, 7.55) for _ in range(n_solid)],
+            y=[rng.uniform(1.25, 1.25 + band) for _ in range(n_solid)],
+            mode="markers", hoverinfo="skip", showlegend=False,
+            marker=dict(size=9, color="rgba(120,108,96,0.95)", line=dict(color="white", width=1)),
+        ))
+
+    # 비커 유리 윤곽
+    fig.add_shape(
+        type="path",
+        path="M 1.6,11.9 L 2,11.5 L 2,2 Q 2,1 3,1 L 7,1 Q 8,1 8,2 L 8,11.5 L 8.4,11.9",
+        line=dict(color="#6b7785", width=4),
+    )
+    # 실험대
+    fig.add_shape(type="line", x0=0.5, x1=9.5, y0=0.9, y1=0.9, line=dict(color="#9aa5b1", width=3))
+
+    fig.add_annotation(x=5, y=12.6, text=f"<b>{title}</b>", showarrow=False, font=dict(size=18))
+    fig.add_annotation(x=5, y=0.2, text=subtitle, showarrow=False, font=dict(size=13))
+
+    fig.update_xaxes(range=[0, 10], visible=False, fixedrange=True)
+    fig.update_yaxes(range=[0, 13.2], visible=False, fixedrange=True, scaleanchor="x")
+    fig.update_layout(
+        height=540, margin=dict(l=0, r=0, t=0, b=0), showlegend=False,
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+    )
+    return fig
+
+
+def page_lab(df: pd.DataFrame):
+    st.header("🧫 직접 해보기")
+    st.caption(
+        f"물질과 질량을 고른 뒤 버튼을 눌러 물 {WATER_ML:.0f} mL가 든 비커에 넣어 보세요. "
+        "물질의 실제 수용해도(logS)에 따라 물의 색과 바닥에 가라앉는 알갱이가 달라집니다."
+    )
+
+    subs = lab_substances(df)
+    ss = st.session_state
+    ss.setdefault("lab_sid", None)  # 비커에 들어 있는 물질 (subs 행 번호)
+    ss.setdefault("lab_mass", 0.0)  # 이 비커에 넣은 누적 질량(g)
+    ss.setdefault("lab_beaker", 1)  # 비커 번호
+    ss.setdefault("lab_log", [])  # 실험 기록
+    ss.setdefault("lab_msg", None)  # 마지막 결과 안내 (종류, 문장)
+
+    left, mid, right = st.columns([1.15, 2, 1.25], gap="large")
+
+    # ── 왼쪽: 물질 선택 + 질량 + 버튼 ──
+    with left:
+        st.subheader("1. 물질 선택")
+        sid = st.radio(
+            "물질",
+            list(subs.index),
+            format_func=lambda i: (
+                f"{subs.at[i, '물질명']}  ·  분자량 {subs.at[i, 'MolWt']:.0f}"
+                f"  ·  MolLogP {subs.at[i, 'MolLogP']:.1f}"
+            ),
+            key="lab_choice",
+            label_visibility="collapsed",
+        )
+        st.subheader("2. 질량 선택")
+        mass = st.slider("이번에 넣을 질량 (g)", 0.1, 50.0, 5.0, 0.1, key="lab_slider")
+        add = st.button("🧪 비커에 넣기", type="primary")
+        reset = st.button("🔄 새 비커로 교체")
+        st.caption("같은 물질을 또 넣으면 같은 비커에 질량이 쌓이고, 다른 물질을 넣으면 새 비커로 바뀝니다.")
+
+        if reset:
+            ss.lab_beaker += 1
+            ss.lab_sid, ss.lab_mass = None, 0.0
+            ss.lab_msg = ("info", "깨끗한 새 비커를 꺼냈어요.")
+            st.toast("새 비커로 교체했어요", icon="🔄")
+
+        if add:
+            if ss.lab_sid is not None and ss.lab_sid != sid:
+                ss.lab_beaker += 1
+                ss.lab_mass = 0.0
+                st.toast(f"다른 물질이라 비커 #{ss.lab_beaker}로 바꿨어요", icon="🔄")
+            ss.lab_sid = sid
+            ss.lab_mass += mass
+            res = lab_result(subs.loc[sid], ss.lab_mass)
+            ratio = res["dissolved"] / ss.lab_mass
+            if res["undissolved"] <= 0:
+                kind, text, icon = "success", "넣은 물질이 모두 녹았어요 (불포화).", "✅"
+            elif ratio < 0.01:
+                kind, text, icon = "warning", "거의 녹지 않고 바닥에 가라앉았어요.", "🪨"
+            else:
+                kind, text, icon = (
+                    "warning",
+                    f"포화! {fmt_g(res['dissolved'])} g만 녹고 {fmt_g(res['undissolved'])} g은 가라앉았어요.",
+                    "⚠️",
+                )
+            ss.lab_msg = (kind, text)
+            st.toast(text, icon=icon)
+            ss.lab_log.append(
+                {
+                    "비커": f"#{ss.lab_beaker}",
+                    "물질": subs.at[sid, "물질명"],
+                    "넣은 질량(g)": mass,
+                    "누적 질량(g)": round(ss.lab_mass, 2),
+                    "녹은 질량(g)": float(f"{res['dissolved']:.3g}"),
+                    "가라앉은 질량(g)": float(f"{res['undissolved']:.3g}"),
+                }
+            )
+
+    # ── 현재 비커 상태 계산 ──
+    active = ss.lab_sid
+    if active is None:
+        t, frac, title, subtitle, res = 0.0, 0.0, f"비커 #{ss.lab_beaker}", f"물 {WATER_ML:.0f} mL (비어 있음)", None
+    else:
+        row = subs.loc[active]
+        res = lab_result(row, ss.lab_mass)
+        # 녹은 농도(g/L)가 1e-4 이하면 투명, 10 이상이면 가장 진함 (로그 눈금)
+        t = min(max((math.log10(max(res["conc_g_l"], 1e-12)) + 4) / 5, 0.0), 1.0)
+        frac = res["undissolved"] / ss.lab_mass if ss.lab_mass > 0 else 0.0
+        title = f"비커 #{ss.lab_beaker}"
+        subtitle = f"{row['물질명']} {ss.lab_mass:.1f} g + 물 {WATER_ML:.0f} mL"
+
+    # ── 가운데: 비커 ──
+    with mid:
+        fig = make_beaker(t, frac, seed=ss.lab_beaker * 1000 + len(ss.lab_log), title=title, subtitle=subtitle)
+        st.plotly_chart(fig, config={"displayModeBar": False})
+        st.caption("물 색: 녹은 농도가 높을수록 진해집니다 (로그 눈금). 갈색 알갱이는 녹지 못하고 가라앉은 물질입니다.")
+
+    # ── 오른쪽: 결과 ──
+    with right:
+        st.subheader("3. 결과")
+        if active is None:
+            st.info("물질과 질량을 고르고 **비커에 넣기**를 눌러 보세요.")
+        else:
+            row = subs.loc[active]
+            st.markdown(f"**{row['물질명']}** · 비커 #{ss.lab_beaker}")
+            m1, m2 = st.columns(2)
+            m1.metric("실측 logS", f"{row[TARGET]:.2f}")
+            m2.metric("수용해도", f"{fmt_g(res['s_g_l'])} g/L")
+            m3, m4 = st.columns(2)
+            m3.metric(f"{WATER_ML:.0f} mL에 녹는 한계", f"{fmt_g(res['limit_g'])} g")
+            m4.metric("누적 넣은 양", f"{ss.lab_mass:.1f} g")
+            m5, m6 = st.columns(2)
+            m5.metric("녹은 양", f"{fmt_g(res['dissolved'])} g")
+            m6.metric("가라앉은 양", f"{fmt_g(res['undissolved'])} g")
+            st.progress(
+                min(max(res["dissolved"] / ss.lab_mass, 0.0), 1.0),
+                text=f"넣은 양 중 녹은 비율 {res['dissolved'] / ss.lab_mass:.2%}",
+            )
+            if ss.lab_msg:
+                getattr(st, ss.lab_msg[0])(ss.lab_msg[1])
+
+            trained = train_model(df)
+            pred = float(trained["model"].predict(pd.DataFrame([row[trained["features"]]]))[0])
+            st.caption(f"참고: 선형 회귀 모델의 예측 logS는 {pred:.2f}입니다 (실측 {row[TARGET]:.2f}).")
+            st.caption(
+                "계산: 한계(g) = 10^logS × 분자량 × 0.1 L. "
+                "넣은 양이 한계보다 크면 한계만큼만 녹고 나머지는 가라앉습니다."
+            )
+
+    # ── 아래: 실험 기록 ──
+    if ss.lab_log:
+        st.subheader("실험 기록")
+        st.dataframe(pd.DataFrame(ss.lab_log[::-1]), hide_index=True)
+
+
 # ───────────────────────── 메인 ─────────────────────────
 st.title(f"{APP_ICON} {APP_TITLE}")
 
@@ -349,12 +604,12 @@ except Exception as e:  # 네트워크 오류 등
     st.error(f"데이터를 불러오지 못했습니다: {e}")
     st.stop()
 
-page = st.sidebar.radio("메뉴", ["📊 데이터 정보", "🔬 수용해도 예측", "📖 수용해도 해설"])
+PAGES = {
+    "📊 데이터 정보": page_data_info,
+    "🔬 수용해도 예측": page_predict,
+    "📖 수용해도 해설": page_explain,
+    "🧫 직접 해보기": page_lab,
+}
+page = st.sidebar.radio("메뉴", list(PAGES))
 st.sidebar.caption(f"{APP_ICON} {APP_TITLE}")
-
-if page.startswith("📊"):
-    page_data_info(data)
-elif page.startswith("🔬"):
-    page_predict(data)
-else:
-    page_explain(data)
+PAGES[page](data)
