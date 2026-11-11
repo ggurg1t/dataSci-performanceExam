@@ -5,6 +5,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
@@ -405,14 +406,83 @@ def fmt_g(x: float) -> str:
     return f"{x:.3g}"
 
 
+WATER_TOP = 8.0  # 수면 높이 (그림 좌표)
+SPAWN_Y = 12.3  # 용질이 떨어지기 시작하는 높이
+ANIM_FRAMES = 100  # 총 프레임 수
+FRAME_MS = 50  # 프레임 간격(ms): 100프레임 ≈ 5초 안에 낙하·수면파·용해·색 변화가 모두 끝난다
+ANIM_PARTICLES = 18  # 한 번 넣을 때 떨어뜨리는 알갱이 수
+
+
 def lerp_rgb(t: float, deep: tuple) -> tuple:
     return tuple(round(a + (b - a) * t) for a, b in zip(WATER_RGB, deep))
 
 
-def make_beaker(t, frac_undissolved, seed, title, subtitle, deep=(30, 100, 220)):
-    """plotly 도형으로 비커를 그린다. t: 물 색 진하기(0~1), deep: 물질 고유색."""
+def water_t(conc_g_l: float) -> float:
+    """녹은 농도(g/L) → 물 색 진하기(0~1). 1e-4 g/L 이하는 투명, 10 g/L 이상은 가장 진함 (로그 눈금)."""
+    return min(max((math.log10(max(conc_g_l, 1e-12)) + 4) / 5, 0.0), 1.0)
+
+
+def pile_count(frac_undissolved: float) -> int:
+    return 0 if frac_undissolved < 0.005 else math.ceil(frac_undissolved * 70)
+
+
+def pile_band(frac_undissolved: float) -> float:
+    return 0.25 + 1.6 * frac_undissolved
+
+
+def pile_positions(seed: int, n: int, band: float) -> tuple:
+    """바닥에 쌓인 알갱이 위치. 같은 seed면 앞쪽 알갱이의 위치가 항상 같다."""
     rng = random.Random(seed)
-    water_top = 8.0
+    xs, ys = [], []
+    for _ in range(n):
+        xs.append(rng.uniform(2.45, 7.55))
+        ys.append(1.25 + rng.random() * band)
+    return xs, ys
+
+
+def _rgba(rgb: tuple, alpha: float) -> str:
+    return f"rgba({rgb[0]},{rgb[1]},{rgb[2]},{alpha})"
+
+
+def _darker(rgb: tuple, d: int = 40) -> tuple:
+    return tuple(max(c - d, 0) for c in rgb)
+
+
+def is_dark_theme() -> bool:
+    try:
+        return st.context.theme.type == "dark"
+    except Exception:
+        return False
+
+
+def _glass(fig, title, subtitle):
+    """비커 유리, 눈금, 실험대, 제목 등 움직이지 않는 부분."""
+    for ml in (25, 50, 75, 100):  # 눈금 (100 mL = 물 높이)
+        y = 1 + (WATER_TOP - 1) * ml / WATER_ML
+        fig.add_shape(type="line", x0=7.35, x1=8, y0=y, y1=y, line=dict(color="#7b8794", width=2))
+        fig.add_annotation(x=8.15, y=y, text=f"{ml} mL", showarrow=False, xanchor="left",
+                           font=dict(size=11))
+    fig.add_shape(
+        type="path",
+        path="M 1.6,11.9 L 2,11.5 L 2,2 Q 2,1 3,1 L 7,1 Q 8,1 8,2 L 8,11.5 L 8.4,11.9",
+        line=dict(color="#6b7785", width=4),
+    )
+    fig.add_shape(type="line", x0=0.5, x1=9.5, y0=0.9, y1=0.9, line=dict(color="#9aa5b1", width=3))
+    fig.add_annotation(x=5, y=12.6, text=f"<b>{title}</b>", showarrow=False, font=dict(size=18))
+    fig.add_annotation(x=5, y=0.2, text=subtitle, showarrow=False, font=dict(size=13))
+
+    fig.update_xaxes(range=[0, 10], visible=False, fixedrange=True)
+    fig.update_yaxes(range=[0, 13.2], visible=False, fixedrange=True, scaleanchor="x")
+    fig.update_layout(
+        height=540, margin=dict(l=0, r=0, t=0, b=0), showlegend=False,
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+    )
+    return fig
+
+
+def make_beaker(t, frac_undissolved, seed, title, subtitle, deep=(30, 100, 220), pile_seed=0):
+    """움직이지 않는 비커 그림. t: 물 색 진하기(0~1), deep: 물질 고유색."""
+    rng = random.Random(seed)
     r, g, b = lerp_rgb(t, deep)
     dr, dg, db = deep
 
@@ -422,61 +492,190 @@ def make_beaker(t, frac_undissolved, seed, title, subtitle, deep=(30, 100, 220))
     fig.add_shape(
         type="path",
         path=(
-            f"M 2.08,{water_top} L 2.08,2 Q 2.08,1.08 3,1.08 L 7,1.08 "
-            f"Q 7.92,1.08 7.92,2 L 7.92,{water_top} Z"
+            f"M 2.08,{WATER_TOP} L 2.08,2 Q 2.08,1.08 3,1.08 L 7,1.08 "
+            f"Q 7.92,1.08 7.92,2 L 7.92,{WATER_TOP} Z"
         ),
         fillcolor=f"rgba({r},{g},{b},0.82)",
         line=dict(width=0),
         layer="below",
     )
     fig.add_shape(
-        type="line", x0=2.08, x1=7.92, y0=water_top, y1=water_top,
-        line=dict(color=f"rgb({max(r - 40, 0)},{max(g - 40, 0)},{max(b - 40, 0)})", width=2),
+        type="line", x0=2.08, x1=7.92, y0=WATER_TOP, y1=WATER_TOP,
+        line=dict(color=_rgba(_darker((r, g, b)), 1), width=2),
     )
-
-    # 눈금 (100 mL = 물 높이)
-    for ml in (25, 50, 75, 100):
-        y = 1 + (water_top - 1) * ml / WATER_ML
-        fig.add_shape(type="line", x0=7.35, x1=8, y0=y, y1=y, line=dict(color="#7b8794", width=2))
-        fig.add_annotation(x=8.15, y=y, text=f"{ml} mL", showarrow=False, xanchor="left",
-                           font=dict(size=11))
 
     # 녹은 입자 (진할수록 많이)
     for _ in range(int(t * 70)):
         fig.add_trace(go.Scatter(
-            x=[rng.uniform(2.3, 7.7)], y=[rng.uniform(1.5, water_top - 0.2)],
+            x=[rng.uniform(2.3, 7.7)], y=[rng.uniform(1.5, WATER_TOP - 0.2)],
             mode="markers", hoverinfo="skip", showlegend=False,
             marker=dict(size=4, color=f"rgba({dr},{dg},{db},0.6)"),
         ))
 
     # 녹지 않고 가라앉은 알갱이
-    n_solid = 0 if frac_undissolved < 0.005 else math.ceil(frac_undissolved * 70)
-    band = 0.25 + 1.6 * frac_undissolved
+    n_solid = pile_count(frac_undissolved)
     if n_solid:
+        xs, ys = pile_positions(pile_seed, n_solid, pile_band(frac_undissolved))
         fig.add_trace(go.Scatter(
-            x=[rng.uniform(2.45, 7.55) for _ in range(n_solid)],
-            y=[rng.uniform(1.25, 1.25 + band) for _ in range(n_solid)],
-            mode="markers", hoverinfo="skip", showlegend=False,
-            marker=dict(size=9, color=f"rgba({dr},{dg},{db},0.95)", line=dict(color="white", width=1)),
+            x=xs, y=ys, mode="markers", hoverinfo="skip", showlegend=False,
+            marker=dict(symbol="square", size=9, color=f"rgba({dr},{dg},{db},0.95)",
+                        line=dict(color="white", width=1)),
         ))
 
-    # 비커 유리 윤곽
-    fig.add_shape(
-        type="path",
-        path="M 1.6,11.9 L 2,11.5 L 2,2 Q 2,1 3,1 L 7,1 Q 8,1 8,2 L 8,11.5 L 8.4,11.9",
-        line=dict(color="#6b7785", width=4),
+    return _glass(fig, title, subtitle)
+
+
+def make_drop_animation(deep, n_dissolve, n_keep, t_prev, t_new, pile_prev, band_new,
+                        seed, title, subtitle, dark=False):
+    """용질이 떨어지는 장면을 plotly 프레임 애니메이션으로 만든다.
+
+    - 공중 낙하: 중력으로 점점 빨라진다.
+    - 수면 충돌: 닿는 순간 수면파가 바깥으로 퍼지며 잦아든다.
+    - 물속 감속: 물의 저항으로 속도가 줄어 일정한 느린 속도로 가라앉는다.
+    - 녹을 용질: 수면 근처에서 크기가 서서히 줄어 사라진다.
+    - 녹지 않을 용질: 크기 그대로 바닥까지 가라앉는다.
+    - 물 색: 첫 충돌부터 마지막 용질이 사라질 때까지 이전 색에서 새 색으로 서서히 변한다.
+    """
+    rng = random.Random(seed)
+    F = ANIM_FRAMES
+    grav = 0.03  # 공기 중 가속도 (좌표/프레임²)
+    big = 12  # 녹을 용질의 처음 크기(px)
+
+    # 1) 알갱이마다 운동을 프레임별로 시뮬레이션
+    parts = []
+    for i in range(n_dissolve + n_keep):
+        dissolve = i < n_dissolve
+        x0 = rng.uniform(3.0, 7.0)
+        delay = rng.randint(0, 14)  # 떨어지기 시작하는 시점(프레임)
+        phase = rng.uniform(0, 6.28)
+        rest = 1.25 + rng.random() * band_new  # 바닥에 멈출 높이
+        shrink = rng.randint(28, 45)  # 녹는 데 걸리는 프레임 수
+        drag, v_term = (0.40, 0.006) if dissolve else (0.80, 0.12)  # 녹을 용질은 수면 근처에 머문다
+        x, y, v = x0, SPAWN_Y, 0.0
+        landed, hit = False, None
+        xs, ys = [], []
+        for f in range(F):
+            if f >= delay and not landed:
+                if y > WATER_TOP:  # 공기 중: 중력 가속
+                    v += grav
+                    y -= v
+                    if y <= WATER_TOP:
+                        hit = f
+                else:  # 물속: 저항으로 감속 → 종단 속도
+                    v = v * drag + (1 - drag) * v_term
+                    y -= v
+                    x = x0 + 0.12 * math.sin(0.3 * (f - hit) + phase)
+                    if not dissolve and y <= rest:
+                        y, landed = rest, True
+            xs.append(x)
+            ys.append(y)
+        parts.append({"dissolve": dissolve, "xs": xs, "ys": ys, "hit": hit, "shrink": shrink})
+
+    def size_at(p, f):
+        if p["hit"] is None or f < p["hit"]:
+            return big
+        return big * max(0.0, 1 - (f - p["hit"]) / p["shrink"])
+
+    # 2) 수면파: 충돌 지점에서 바깥으로 퍼지며 잦아드는 파동
+    impacts = [(p["hit"], p["xs"][p["hit"]]) for p in parts if p["hit"] is not None]
+    sx = [2.08 + 5.84 * k / 60 for k in range(61)]
+
+    def wave(f, x):
+        h = 0.0
+        for t_i, x_i in impacts:
+            dt = f - t_i
+            if dt < 0:
+                continue
+            dist = abs(x - x_i)
+            front = 0.14 * dt  # 파면이 퍼지는 속도
+            if dist > front:
+                continue
+            edge = min(1.0, (front - dist) / 0.5)
+            h += 0.10 * edge * math.exp(-dt / 20) * math.exp(-0.2 * dist) * math.sin(3.0 * dist - 0.42 * dt)
+        return max(-0.35, min(0.35, h))
+
+    # 3) 물 색 변화 구간: 첫 충돌 ~ 마지막 녹을 용질이 사라질 때
+    first_hit = min((p["hit"] for p in parts if p["hit"] is not None), default=20)
+    last_gone = max(
+        (p["hit"] + p["shrink"] for p in parts if p["dissolve"] and p["hit"] is not None),
+        default=first_hit + 40,
     )
-    # 실험대
-    fig.add_shape(type="line", x0=0.5, x1=9.5, y0=0.9, y1=0.9, line=dict(color="#9aa5b1", width=3))
+    c0, c1 = first_hit, max(last_gone, first_hit + 20)
 
-    fig.add_annotation(x=5, y=12.6, text=f"<b>{title}</b>", showarrow=False, font=dict(size=18))
-    fig.add_annotation(x=5, y=0.2, text=subtitle, showarrow=False, font=dict(size=13))
+    def smooth(u):
+        u = min(max(u, 0.0), 1.0)
+        return u * u * (3 - 2 * u)
 
-    fig.update_xaxes(range=[0, 10], visible=False, fixedrange=True)
-    fig.update_yaxes(range=[0, 13.2], visible=False, fixedrange=True, scaleanchor="x")
+    # 물속에 퍼진 작은 입자(색이 짙어질수록 잘 보임)
+    drng = random.Random(seed + 1)
+    n_dots = int(t_new * 70)
+    dots_x = [drng.uniform(2.3, 7.7) for _ in range(n_dots)]
+    dots_y = [drng.uniform(1.5, WATER_TOP - 0.3) for _ in range(n_dots)]
+
+    # 4) 프레임별로 바뀌는 속성 (트레이스 번호 0, 1, 2, 4, 5)
+    dyn_idx = [0, 1, 2, 4, 5]
+    bottom_x = [7.92, 7.7, 7.0, 3.0, 2.3, 2.08]
+    bottom_y = [2.0, 1.25, 1.08, 1.08, 1.25, 2.0]
+    keep_parts = [p for p in parts if not p["dissolve"]]
+    dis_parts = [p for p in parts if p["dissolve"]]
+
+    def attrs(f):
+        t_f = t_prev + (t_new - t_prev) * smooth((f - c0) / (c1 - c0))
+        rgb = lerp_rgb(t_f, deep)
+        surf = [WATER_TOP + wave(f, x) for x in sx]
+        return [
+            dict(x=sx + bottom_x, y=surf + bottom_y, fillcolor=_rgba(rgb, 0.82)),
+            dict(x=sx, y=surf, line=dict(color=_rgba(_darker(rgb), 1), width=2)),
+            dict(marker=dict(opacity=0.6 * (t_f / t_new) if t_new > 0 else 0.0)),
+            dict(x=[p["xs"][f] for p in keep_parts], y=[p["ys"][f] for p in keep_parts]),
+            dict(x=[p["xs"][f] for p in dis_parts], y=[p["ys"][f] for p in dis_parts],
+                 marker=dict(size=[size_at(p, f) for p in dis_parts])),
+        ]
+
+    styles = {
+        0: dict(mode="lines", fill="toself", line=dict(width=0), hoverinfo="skip", showlegend=False),
+        1: dict(mode="lines", hoverinfo="skip", showlegend=False),
+        2: dict(mode="markers", x=dots_x, y=dots_y, hoverinfo="skip", showlegend=False,
+                marker=dict(size=4, color=_rgba(deep, 1))),
+        4: dict(mode="markers", name="녹지 않을 용질", hoverinfo="skip", showlegend=n_keep > 0,
+                marker=dict(symbol="square", size=9, color=_rgba(deep, 1),
+                            line=dict(color="white", width=1))),
+        5: dict(mode="markers", name="녹을 용질", hoverinfo="skip", showlegend=n_dissolve > 0,
+                marker=dict(symbol="circle", color=_rgba(deep, 0.75),
+                            line=dict(color=_rgba(deep, 1), width=1.5))),
+    }
+
+    first = attrs(0)
+    data = [None] * 6
+    for k, i in enumerate(dyn_idx):
+        trace = go.Scatter(**styles[i])
+        trace.update(first[k])
+        data[i] = trace
+    pile_x, pile_y = pile_prev  # 이미 바닥에 쌓여 있던 알갱이 (움직이지 않음)
+    data[3] = go.Scatter(
+        x=pile_x, y=pile_y, mode="markers", hoverinfo="skip", showlegend=False,
+        marker=dict(symbol="square", size=9, color=_rgba(deep, 0.95), line=dict(color="white", width=1)),
+    )
+
+    fig = go.Figure(data=data)
+    fig.frames = [
+        go.Frame(data=[go.Scatter(**a) for a in attrs(f)], traces=dyn_idx, name=str(f))
+        for f in range(F)
+    ]
+
+    _glass(fig, title, subtitle)
     fig.update_layout(
-        height=540, margin=dict(l=0, r=0, t=0, b=0), showlegend=False,
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        showlegend=True,
+        font=dict(color="#fafafa" if dark else "#31333f"),
+        legend=dict(x=0.0, y=1.0, xanchor="left", yanchor="top", bgcolor="rgba(0,0,0,0)"),
+        updatemenus=[dict(
+            type="buttons", showactive=False, x=1.0, y=1.0, xanchor="right", yanchor="top",
+            buttons=[dict(
+                label="▶ 다시 재생", method="animate",
+                args=[None, dict(frame=dict(duration=FRAME_MS, redraw=True),
+                                 transition=dict(duration=0), fromcurrent=False, mode="immediate")],
+            )],
+        )],
     )
     return fig
 
@@ -527,6 +726,8 @@ def page_lab(df: pd.DataFrame):
             ss.lab_beaker += 1
             ss.lab_sid, ss.lab_mass = None, 0.0
             ss.lab_msg = ("info", "깨끗한 새 비커를 꺼냈어요.")
+            if "lab_anim" in ss:
+                del ss["lab_anim"]
             st.toast("새 비커로 교체했어요", icon="🔄")
 
         if add:
@@ -535,9 +736,30 @@ def page_lab(df: pd.DataFrame):
                 ss.lab_mass = 0.0
                 st.toast(f"다른 물질이라 비커 #{ss.lab_beaker}로 바꿨어요", icon="🔄")
             ss.lab_sid = sid
+            row_new = subs.loc[sid]
+            prev_total = ss.lab_mass  # 이번에 넣기 전까지 이 비커에 들어 있던 양
+            prev_res = lab_result(row_new, prev_total) if prev_total > 0 else None
             ss.lab_mass += mass
-            res = lab_result(subs.loc[sid], ss.lab_mass)
+            res = lab_result(row_new, ss.lab_mass)
             ratio = res["dissolved"] / ss.lab_mass
+
+            # 이번에 넣은 양 중 녹을 몫과 녹지 않을 몫을 나눠 애니메이션용 알갱이 수를 정한다
+            added_dissolved = res["dissolved"] - (prev_res["dissolved"] if prev_res else 0.0)
+            share = min(max(added_dissolved / mass, 0.0), 1.0)
+            n_dis = round(ANIM_PARTICLES * share)
+            if share > 0.02 and n_dis == 0:
+                n_dis = 1
+            ss.lab_anim = {
+                "sid": sid,
+                "beaker": ss.lab_beaker,
+                "n_dis": n_dis,
+                "n_keep": ANIM_PARTICLES - n_dis,
+                "t_prev": water_t(prev_res["conc_g_l"]) if prev_res else 0.0,
+                "t_new": water_t(res["conc_g_l"]),
+                "frac_prev": prev_res["undissolved"] / prev_total if prev_res else 0.0,
+                "frac_new": res["undissolved"] / ss.lab_mass,
+                "seed": ss.lab_beaker * 1000 + len(ss.lab_log),
+            }
             if res["undissolved"] <= 0:
                 kind, text, icon = "success", "넣은 물질이 모두 녹았어요 (불포화).", "✅"
             elif ratio < 0.01:
@@ -570,19 +792,49 @@ def page_lab(df: pd.DataFrame):
         row = subs.loc[active]
         deep = substance_color(row)[2]
         res = lab_result(row, ss.lab_mass)
-        # 녹은 농도(g/L)가 1e-4 이하면 투명, 10 이상이면 가장 진함 (로그 눈금)
-        t = min(max((math.log10(max(res["conc_g_l"], 1e-12)) + 4) / 5, 0.0), 1.0)
+        t = water_t(res["conc_g_l"])
         frac = res["undissolved"] / ss.lab_mass if ss.lab_mass > 0 else 0.0
         title = f"비커 #{ss.lab_beaker}"
         subtitle = f"{substance_color(row)[0]} {row['물질명']} {ss.lab_mass:.1f} g + 물 {WATER_ML:.0f} mL"
 
     # ── 가운데: 비커 ──
     with mid:
-        fig = make_beaker(t, frac, seed=ss.lab_beaker * 1000 + len(ss.lab_log), title=title, subtitle=subtitle, deep=deep)
-        st.plotly_chart(fig, config={"displayModeBar": False})
+        anim = ss.get("lab_anim")
+        if "lab_anim" in ss:
+            del ss["lab_anim"]  # 버튼을 누른 직후 한 번만 재생한다
+
+        if anim is not None and active is not None and anim["sid"] == active:
+            pile_prev = pile_positions(anim["beaker"], pile_count(anim["frac_prev"]), pile_band(anim["frac_prev"]))
+            fig = make_drop_animation(
+                deep, anim["n_dis"], anim["n_keep"], anim["t_prev"], anim["t_new"],
+                pile_prev, pile_band(anim["frac_new"]), anim["seed"], title, subtitle,
+                dark=is_dark_theme(),
+            )
+            try:
+                # 페이지가 열리자마자 프레임이 자동 재생되도록 HTML로 내보낸다
+                html = fig.to_html(
+                    include_plotlyjs="cdn", full_html=False, auto_play=True,
+                    animation_opts=dict(
+                        frame=dict(duration=FRAME_MS, redraw=True),
+                        transition=dict(duration=0), mode="immediate",
+                    ),
+                    default_width="100%", default_height="540px",
+                    config={"displayModeBar": False},
+                )
+                components.html(html, height=550)
+            except Exception:
+                # 자동 재생을 쓸 수 없으면 일반 차트로 보여 주고 ▶ 버튼으로 재생한다
+                st.plotly_chart(fig, config={"displayModeBar": False})
+        else:
+            fig = make_beaker(
+                t, frac, seed=ss.lab_beaker * 1000 + len(ss.lab_log), title=title,
+                subtitle=subtitle, deep=deep, pile_seed=ss.lab_beaker,
+            )
+            st.plotly_chart(fig, config={"displayModeBar": False})
         st.caption(
-            "물질마다 고유한 색이 있고, 녹은 농도가 높을수록 물이 그 색으로 진해집니다 (로그 눈금). "
-            "바닥의 알갱이는 녹지 못하고 가라앉은 물질입니다."
+            "물질을 넣으면 공중에서 떨어져 수면파를 만들고, 물속에서는 저항으로 느려집니다. "
+            "녹을 용질(●)은 수면 근처에서 점점 작아지며 물이 그 물질의 고유색으로 서서히 변하고, "
+            "녹지 않을 용질(■)은 바닥까지 가라앉습니다. 물이 진해지는 정도는 녹은 농도에 따라 달라집니다(로그 눈금)."
         )
 
     # ── 오른쪽: 결과 ──
