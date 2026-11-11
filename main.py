@@ -688,7 +688,7 @@ def page_lab(df: pd.DataFrame):
     subs = lab_substances(df)
     ss = st.session_state
     ss.setdefault("lab_sid", None)  # 비커에 들어 있는 물질 (subs 행 번호)
-    ss.setdefault("lab_mass", 0.0)  # 이 비커에 넣은 누적 질량(g)
+    ss.setdefault("lab_mass", 0.0)  # 이 비커에 넣은 질량(g)
     ss.setdefault("lab_beaker", 1)  # 비커 번호
     ss.setdefault("lab_log", [])  # 실험 기록
     ss.setdefault("lab_msg", None)  # 마지막 결과 안내 (종류, 문장)
@@ -718,7 +718,7 @@ def page_lab(df: pd.DataFrame):
         mass = st.slider("이번에 넣을 질량 (g)", 0.1, 50.0, 5.0, 0.1, key="lab_slider")
         add = st.button("🧪 비커에 넣기", type="primary")
         reset = st.button("🔄 새 비커로 교체")
-        st.caption("같은 물질을 또 넣으면 같은 비커에 질량이 쌓이고, 다른 물질을 넣으면 새 비커로 바뀝니다.")
+        st.caption("실험할 때마다 새 비커로 바뀝니다. 같은 물질이어도 마찬가지입니다.")
 
         if reset:
             ss.lab_beaker += 1
@@ -729,21 +729,17 @@ def page_lab(df: pd.DataFrame):
             st.toast("새 비커로 교체했어요", icon="🔄")
 
         if add:
-            if ss.lab_sid is not None and ss.lab_sid != sid:
+            # 실험할 때마다 항상 새 비커(같은 물질이어도)에서 시작한다
+            if ss.lab_sid is not None:
                 ss.lab_beaker += 1
-                ss.lab_mass = 0.0
-                st.toast(f"다른 물질이라 비커 #{ss.lab_beaker}로 바꿨어요", icon="🔄")
+                st.toast(f"새 비커 #{ss.lab_beaker}로 바꿨어요", icon="🔄")
             ss.lab_sid = sid
-            row_new = subs.loc[sid]
-            prev_total = ss.lab_mass  # 이번에 넣기 전까지 이 비커에 들어 있던 양
-            prev_res = lab_result(row_new, prev_total) if prev_total > 0 else None
-            ss.lab_mass += mass
-            res = lab_result(row_new, ss.lab_mass)
-            ratio = res["dissolved"] / ss.lab_mass
+            ss.lab_mass = mass
+            res = lab_result(subs.loc[sid], mass)
+            ratio = res["dissolved"] / mass
 
-            # 이번에 넣은 양 중 녹을 몫과 녹지 않을 몫을 나눠 애니메이션용 알갱이 수를 정한다
-            added_dissolved = res["dissolved"] - (prev_res["dissolved"] if prev_res else 0.0)
-            share = min(max(added_dissolved / mass, 0.0), 1.0)
+            # 넣은 양 중 녹을 몫과 녹지 않을 몫을 나눠 애니메이션용 알갱이 수를 정한다
+            share = min(max(res["dissolved"] / mass, 0.0), 1.0)
             n_dis = round(ANIM_PARTICLES * share)
             if share > 0.02 and n_dis == 0:
                 n_dis = 1
@@ -752,10 +748,10 @@ def page_lab(df: pd.DataFrame):
                 "beaker": ss.lab_beaker,
                 "n_dis": n_dis,
                 "n_keep": ANIM_PARTICLES - n_dis,
-                "t_prev": water_t(prev_res["conc_g_l"]) if prev_res else 0.0,
+                "t_prev": 0.0,  # 새 비커라 맑은 물에서 시작
                 "t_new": water_t(res["conc_g_l"]),
-                "frac_prev": prev_res["undissolved"] / prev_total if prev_res else 0.0,
-                "frac_new": res["undissolved"] / ss.lab_mass,
+                "frac_prev": 0.0,  # 바닥에 쌓인 것 없음
+                "frac_new": res["undissolved"] / mass,
                 "seed": ss.lab_beaker * 1000 + len(ss.lab_log),
             }
             if res["undissolved"] <= 0:
@@ -775,7 +771,6 @@ def page_lab(df: pd.DataFrame):
                     "비커": f"#{ss.lab_beaker}",
                     "물질": subs.at[sid, "물질명"],
                     "넣은 질량(g)": mass,
-                    "누적 질량(g)": round(ss.lab_mass, 2),
                     "녹은 질량(g)": float(f"{res['dissolved']:.3g}"),
                     "가라앉은 질량(g)": float(f"{res['undissolved']:.3g}"),
                 }
@@ -844,7 +839,7 @@ def page_lab(df: pd.DataFrame):
             m2.metric("수용해도", f"{fmt_g(res['s_g_l'])} g/L")
             m3, m4 = st.columns(2)
             m3.metric(f"{WATER_ML:.0f} mL에 녹는 한계", f"{fmt_g(res['limit_g'])} g")
-            m4.metric("누적 넣은 양", f"{ss.lab_mass:.1f} g")
+            m4.metric("넣은 양", f"{ss.lab_mass:.1f} g")
             m5, m6 = st.columns(2)
             m5.metric("녹은 양", f"{fmt_g(res['dissolved'])} g")
             m6.metric("가라앉은 양", f"{fmt_g(res['undissolved'])} g")
