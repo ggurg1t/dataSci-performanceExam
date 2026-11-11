@@ -539,7 +539,7 @@ def make_drop_animation(deep, n_dissolve, n_keep, t_prev, t_new, pile_prev, band
     rng = random.Random(seed)
     F = ANIM_FRAMES
     grav = 0.03  # 공기 중 가속도 (좌표/프레임²)
-    big = 12  # 녹을 용질의 처음 크기(px)
+    big = 9  # 녹을 용질의 처음 크기(px). 녹지 않을 용질과 같은 크기의 사각형
 
     # 1) 알갱이마다 운동을 프레임별로 시뮬레이션
     parts = []
@@ -637,12 +637,12 @@ def make_drop_animation(deep, n_dissolve, n_keep, t_prev, t_new, pile_prev, band
         1: dict(mode="lines", hoverinfo="skip", showlegend=False),
         2: dict(mode="markers", x=dots_x, y=dots_y, hoverinfo="skip", showlegend=False,
                 marker=dict(size=4, color=_rgba(deep, 1))),
-        4: dict(mode="markers", name="녹지 않을 용질", hoverinfo="skip", showlegend=n_keep > 0,
+        4: dict(mode="markers", name="녹지 않을 용질", hoverinfo="skip", showlegend=False,
                 marker=dict(symbol="square", size=9, color=_rgba(deep, 1),
                             line=dict(color="white", width=1))),
-        5: dict(mode="markers", name="녹을 용질", hoverinfo="skip", showlegend=n_dissolve > 0,
-                marker=dict(symbol="square", color=_rgba(deep, 0.75),
-                            line=dict(color=_rgba(deep, 1), width=1.5))),
+        5: dict(mode="markers", name="녹을 용질", hoverinfo="skip", showlegend=False,
+                marker=dict(symbol="square", color=_rgba(deep, 1),
+                            line=dict(color="white", width=1))),
     }
 
     first = attrs(0)
@@ -665,9 +665,7 @@ def make_drop_animation(deep, n_dissolve, n_keep, t_prev, t_new, pile_prev, band
 
     _glass(fig, title, subtitle)
     fig.update_layout(
-        showlegend=True,
         font=dict(color="#fafafa" if dark else "#31333f"),
-        legend=dict(x=0.0, y=1.0, xanchor="left", yanchor="top", bgcolor="rgba(0,0,0,0)"),
         updatemenus=[dict(
             type="buttons", showactive=False, x=1.0, y=1.0, xanchor="right", yanchor="top",
             buttons=[dict(
