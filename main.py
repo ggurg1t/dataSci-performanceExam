@@ -641,7 +641,7 @@ def make_drop_animation(deep, n_dissolve, n_keep, t_prev, t_new, pile_prev, band
                 marker=dict(symbol="square", size=9, color=_rgba(deep, 1),
                             line=dict(color="white", width=1))),
         5: dict(mode="markers", name="녹을 용질", hoverinfo="skip", showlegend=n_dissolve > 0,
-                marker=dict(symbol="circle", color=_rgba(deep, 0.75),
+                marker=dict(symbol="square", color=_rgba(deep, 0.75),
                             line=dict(color=_rgba(deep, 1), width=1.5))),
     }
 
@@ -831,11 +831,6 @@ def page_lab(df: pd.DataFrame):
                 subtitle=subtitle, deep=deep, pile_seed=ss.lab_beaker,
             )
             st.plotly_chart(fig, config={"displayModeBar": False})
-        st.caption(
-            "물질을 넣으면 공중에서 떨어져 수면파를 만들고, 물속에서는 저항으로 느려집니다. "
-            "녹을 용질(●)은 수면 근처에서 점점 작아지며 물이 그 물질의 고유색으로 서서히 변하고, "
-            "녹지 않을 용질(■)은 바닥까지 가라앉습니다. 물이 진해지는 정도는 녹은 농도에 따라 달라집니다(로그 눈금)."
-        )
 
     # ── 오른쪽: 결과 ──
     with right:
